@@ -30,6 +30,101 @@ Three bad options exist for testing LLM code today:
 
 `fakellm` is a fourth option. A local server that returns plausible responses in the right shape, controlled by a small YAML file. Same prompt → same response, every time.
 
+## A real example
+
+Say you're building a customer support classifier. Your code calls OpenAI to categorize incoming tickets:
+
+```python
+# app/classifier.py
+from openai import OpenAI
+
+client = OpenAI()
+
+def classify_ticket(text: str) -> str:
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Classify as: billing, technical, or other."},
+            {"role": "user", "content": text},
+        ],
+    )
+    return resp.choices[0].message.content.strip().lower()
+```
+
+Without a mock, every test run hits OpenAI — slow, costs money, gives different answers each time. With fakellm, your tests run against a local server that returns deterministic responses based on rules.
+
+Configure the rules in `fakellm.yaml`:
+
+```yaml
+version: 1
+
+rules:
+  - name: billing_keyword
+    when:
+      messages_contain: "refund"
+    respond:
+      content: "billing"
+
+  - name: technical_keyword
+    when:
+      messages_contain: "error"
+    respond:
+      content: "technical"
+
+  - name: simulate_rate_limit
+    when:
+      header.x-test-scenario: rate_limit
+    respond:
+      status: 429
+      error: "Rate limit exceeded"
+```
+
+Start the server in the background:
+
+```bash
+fakellm serve &
+```
+
+Write tests that point at localhost:
+
+```python
+# tests/test_classifier.py
+import pytest
+from openai import RateLimitError, OpenAI
+from app.classifier import classify_ticket
+
+@pytest.fixture(autouse=True)
+def use_mock_llm(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:9999/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "not-needed")
+
+def test_billing_ticket():
+    assert classify_ticket("I want a refund for my last order") == "billing"
+
+def test_technical_ticket():
+    assert classify_ticket("I keep getting an error when logging in") == "technical"
+
+def test_handles_rate_limit():
+    client = OpenAI(
+        base_url="http://localhost:9999/v1",
+        api_key="not-needed",
+        default_headers={"x-test-scenario": "rate_limit"},
+    )
+    with pytest.raises(RateLimitError):
+        client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "test"}],
+        )
+```
+
+Run them:
+
+```bash
+pytest tests/
+```
+
+Three tests, all deterministic, all free, all in milliseconds. The first two verify your classifier returns the right category for known inputs. The third verifies your code handles rate limits gracefully — a failure mode you can't reliably reproduce against the real API.
+
 ## Configure
 
 `fakellm.yaml`:
