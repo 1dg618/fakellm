@@ -20,7 +20,7 @@ def test_messages_contain_matcher():
         ]
     )
     body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello world"}]}
-    rule = match_request(body, config, api="openai")
+    rule = match_request(body, {}, config, api="openai")
     assert rule is not None
     assert rule["name"] == "hello_rule"
 
@@ -36,7 +36,7 @@ def test_no_match_returns_none():
         ]
     )
     body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
-    assert match_request(body, config, api="openai") is None
+    assert match_request(body, {}, config, api="openai") is None
 
 
 def test_model_matches_glob():
@@ -51,8 +51,8 @@ def test_model_matches_glob():
     )
     body1 = {"model": "claude-haiku-4-5", "messages": []}
     body2 = {"model": "gpt-4o", "messages": []}
-    assert match_request(body1, config, api="openai") is not None
-    assert match_request(body2, config, api="openai") is None
+    assert match_request(body1, {}, config, api="openai") is not None
+    assert match_request(body2, {}, config, api="openai") is None
 
 
 def test_openai_response_shape():

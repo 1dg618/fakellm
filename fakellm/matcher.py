@@ -9,11 +9,13 @@ from .config import Config
 
 
 def match_request(
-    body: dict[str, Any], config: Config, api: str
+    body: dict[str, Any],
+    headers: dict[str, str],
+    config: Config,
+    api: str,
 ) -> dict[str, Any] | None:
     """Walk rules top-to-bottom. Return the first matching rule, or None."""
     messages = extract_messages(body, api)
-    headers = body.get("_headers", {})  # injected by server.py
 
     for rule in config.rules:
         if _rule_matches(rule, body, messages, headers):

@@ -1,0 +1,25 @@
+# fakellm.yaml — see https://github.com/yourname/fakellm for docs
+version: 1
+
+defaults:
+  fallback: deterministic_echo
+
+rules:
+  - name: greeting
+    when:
+      messages_contain: "hello"
+    respond:
+      content: "Hi there! This is a mock response from fakellm."
+
+  - name: classifier_demo
+    when:
+      messages_contain: "classify the sentiment"
+    respond:
+      content: "positive"
+
+  - name: rate_limit_scenario
+    when:
+      header.x-test-scenario: rate_limit
+    respond:
+      status: 429
+      error: "Rate limit exceeded (mock)"

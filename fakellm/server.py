@@ -1,11 +1,17 @@
-"""FastAPI server. Mounts OpenAI and Anthropic compatible endpoints."""
+"""FastAPI server. Mounts OpenAI and Anthropic compatible endpoints.
+
+Note: this server stores per-process state (config, stats, recent requests) at
+module level. Running with multiple uvicorn workers will partition that state
+across workers and is not currently supported. Run with a single worker.
+"""
 
 from __future__ import annotations
 
+import html
 import os
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Deque
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -18,36 +24,33 @@ from .streaming import build_stream
 app = FastAPI(title="fakellm", description="A mock LLM server for testing.")
 
 # Module-level state. Reload via /_fakellm/reload.
-_config: Config = load_config(os.environ.get("LLMOCK_CONFIG", "fakellm.yaml"))
-_stats: Counter[str] = Counter()
-_recent: list[dict[str, Any]] = []
+# NOTE: not safe across multiple uvicorn workers — see module docstring.
 _MAX_RECENT = 50
+_config: Config = load_config(os.environ.get("FAKELLM_CONFIG", "fakellm.yaml"))
+_stats: Counter[str] = Counter()
+_recent: Deque[dict[str, Any]] = deque(maxlen=_MAX_RECENT)
 
 
 def _record(api: str, body: dict[str, Any], rule: dict[str, Any] | None) -> None:
     rule_name = rule.get("name", "<unnamed>") if rule else "<fallthrough>"
     _stats[rule_name] += 1
-    _recent.insert(
-        0,
+    _recent.appendleft(
         {
             "ts": datetime.now(timezone.utc).isoformat(),
             "api": api,
             "model": body.get("model"),
             "stream": bool(body.get("stream")),
             "matched_rule": rule_name,
-        },
+        }
     )
-    del _recent[_MAX_RECENT:]
 
 
 async def _handle(request: Request, api: str):
     body = await request.json()
-    body["_headers"] = {k.lower(): v for k, v in request.headers.items()}
+    headers = {k.lower(): v for k, v in request.headers.items()}
 
-    rule = match_request(body, _config, api=api)
+    rule = match_request(body, headers, _config, api=api)
     _record(api, body, rule)
-
-    body.pop("_headers", None)
 
     if body.get("stream"):
         return StreamingResponse(
@@ -74,26 +77,29 @@ async def stats():
     return {
         "total_requests": sum(_stats.values()),
         "by_rule": dict(_stats),
-        "recent": _recent,
+        "recent": list(_recent),
     }
 
 
 @app.post("/_fakellm/reload")
 async def reload_config():
     global _config
-    _config = load_config(os.environ.get("LLMOCK_CONFIG", "fakellm.yaml"))
+    _config = load_config(os.environ.get("FAKELLM_CONFIG", "fakellm.yaml"))
     return {"reloaded": True, "rules": len(_config.rules)}
 
 
 @app.get("/_fakellm", response_class=HTMLResponse)
 async def dashboard():
+    def esc(value: Any) -> str:
+        return html.escape(str(value)) if value is not None else ""
+
     rows = "".join(
-        f"<tr><td>{r['ts']}</td><td>{r['api']}</td><td>{r['model']}</td>"
-        f"<td>{'yes' if r['stream'] else 'no'}</td><td>{r['matched_rule']}</td></tr>"
+        f"<tr><td>{esc(r['ts'])}</td><td>{esc(r['api'])}</td><td>{esc(r['model'])}</td>"
+        f"<td>{'yes' if r['stream'] else 'no'}</td><td>{esc(r['matched_rule'])}</td></tr>"
         for r in _recent
     )
     rule_rows = "".join(
-        f"<tr><td>{name}</td><td>{count}</td></tr>"
+        f"<tr><td>{esc(name)}</td><td>{count}</td></tr>"
         for name, count in _stats.most_common()
     )
     return f"""<!doctype html>

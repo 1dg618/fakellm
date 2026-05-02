@@ -68,7 +68,17 @@ def serve(host: str, port: int, config: str, reload: bool) -> None:
     """Start the mock server."""
     import os
 
-    os.environ["LLMOCK_CONFIG"] = config
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(
+            f"Error: config file not found at '{config}'.\n"
+            f"Run `fakellm init` to create a starter config, "
+            f"or pass --config <path> to point at an existing one.",
+            err=True,
+        )
+        raise click.exceptions.Exit(1)
+
+    os.environ["FAKELLM_CONFIG"] = config
     click.echo(f"fakellm serving on http://{host}:{port}")
     click.echo(f"  OpenAI:    {host}:{port}/v1/chat/completions")
     click.echo(f"  Anthropic: {host}:{port}/v1/messages")

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
+import json
 import time
 import uuid
 from typing import Any
 
+from ._util import approx_tokens, count_tokens_from_messages, deterministic_echo
 from .matcher import extract_messages
 
 
@@ -23,20 +24,13 @@ def build_response(
 
     content = respond.get("content")
     if content is None:
-        content = _deterministic_echo(body)
+        content = deterministic_echo(body)
 
     tool_calls = respond.get("tool_calls")
 
     if api == "openai":
         return 200, _openai_response(body, content, tool_calls)
     return 200, _anthropic_response(body, content, tool_calls)
-
-
-def _deterministic_echo(body: dict[str, Any]) -> str:
-    """A stable, fake-but-plausible response based on a hash of the request."""
-    seed = hashlib.sha256(repr(sorted(body.items())).encode()).hexdigest()[:8]
-    model = body.get("model", "unknown")
-    return f"[mock response for {model}, fingerprint {seed}]"
 
 
 def _error_body(respond: dict[str, Any], api: str) -> dict[str, Any]:
@@ -49,8 +43,8 @@ def _error_body(respond: dict[str, Any], api: str) -> dict[str, Any]:
 def _openai_response(
     body: dict[str, Any], content: str, tool_calls: list[dict[str, Any]] | None
 ) -> dict[str, Any]:
-    prompt_tokens = _count_tokens_from_messages(extract_messages(body, "openai"))
-    completion_tokens = _approx_tokens(content) if content else 0
+    prompt_tokens = count_tokens_from_messages(extract_messages(body, "openai"))
+    completion_tokens = approx_tokens(content) if content else 0
 
     message: dict[str, Any] = {"role": "assistant", "content": content}
     finish_reason = "stop"
@@ -63,7 +57,7 @@ def _openai_response(
                 "type": "function",
                 "function": {
                     "name": tc["name"],
-                    "arguments": _json_dump(tc.get("arguments", {})),
+                    "arguments": json.dumps(tc.get("arguments", {})),
                 },
             }
             for tc in tool_calls
@@ -93,8 +87,8 @@ def _openai_response(
 def _anthropic_response(
     body: dict[str, Any], content: str, tool_calls: list[dict[str, Any]] | None
 ) -> dict[str, Any]:
-    prompt_tokens = _count_tokens_from_messages(extract_messages(body, "anthropic"))
-    completion_tokens = _approx_tokens(content) if content else 0
+    prompt_tokens = count_tokens_from_messages(extract_messages(body, "anthropic"))
+    completion_tokens = approx_tokens(content) if content else 0
 
     blocks: list[dict[str, Any]] = []
     stop_reason = "end_turn"
@@ -127,27 +121,3 @@ def _anthropic_response(
             "output_tokens": completion_tokens,
         },
     }
-
-
-def _approx_tokens(text: str) -> int:
-    """Rough token count. Real version should use tiktoken / Anthropic tokenizer."""
-    return max(1, len(text) // 4)
-
-
-def _count_tokens_from_messages(messages: list[dict[str, Any]]) -> int:
-    total = 0
-    for m in messages:
-        content = m.get("content", "")
-        if isinstance(content, str):
-            total += _approx_tokens(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and "text" in block:
-                    total += _approx_tokens(block["text"])
-    return total
-
-
-def _json_dump(obj: Any) -> str:
-    import json
-
-    return json.dumps(obj)
