@@ -1,6 +1,6 @@
 [project]
 name = "fakellm"
-version = "0.1.0"
+version = "0.1.1"
 description = "A mock LLM server for testing. Drop-in replacement for OpenAI and Anthropic APIs."
 readme = "README.md"
 requires-python = ">=3.10"
