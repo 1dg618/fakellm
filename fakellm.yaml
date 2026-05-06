@@ -1,10 +1,52 @@
-# fakellm.yaml — see https://github.com/yourname/fakellm for docs
+# fakellm.yaml — starter config
+#
+# Rules are evaluated top-to-bottom; the first matching rule wins. A rule
+# with no `when:` matches everything (use it as a fallback at the bottom).
+#
+# Edit this file and either restart the server or hot-reload with:
+#   curl -X POST http://127.0.0.1:9999/_fakellm/reload
+#
+# Full reference: https://github.com/yourname/fakellm#config-reference
+
 version: 1
 
 defaults:
   fallback: deterministic_echo
 
 rules:
+
+  # =========================================================================
+  # MULTI-TURN AGENT FLOW
+  # The killer use case: script a whole agent conversation as data.
+  # Turn 1 returns a tool call; turn 2 reads the tool result and summarizes.
+  # =========================================================================
+
+  - name: agent_kickoff
+    when:
+      turn: 1
+      messages_contain: "research"
+    respond:
+      tool_calls:
+        - name: web_search
+          arguments: {query: "fakellm pypi downloads"}
+
+  - name: agent_summarize
+    when:
+      turn: 2
+      tool_result_contains: "found"
+    respond:
+      content: "Based on the search results, I found what you were looking for."
+
+  - name: agent_follow_up
+    when:
+      turn_in: [3, 99]
+    respond:
+      content: "Anything else I can help with?"
+
+  # =========================================================================
+  # SIMPLE CONTENT-BASED MATCHING
+  # =========================================================================
+
   - name: greeting
     when:
       messages_contain: "hello"
@@ -17,9 +59,77 @@ rules:
     respond:
       content: "positive"
 
+  # =========================================================================
+  # ERROR INJECTION
+  # Trigger a 429 by sending header `X-Test-Scenario: rate_limit`.
+  # Useful for verifying your retry/backoff logic.
+  # =========================================================================
+
   - name: rate_limit_scenario
     when:
       header.x-test-scenario: rate_limit
     respond:
       status: 429
       error: "Rate limit exceeded (mock)"
+
+  - name: server_error_scenario
+    when:
+      header.x-test-scenario: server_error
+    respond:
+      status: 500
+      error: "Internal server error (mock)"
+
+  # =========================================================================
+  # MODEL-SPECIFIC ROUTING
+  # Glob patterns supported on `model_matches`.
+  # =========================================================================
+
+  - name: claude_specific
+    when:
+      model_matches: "claude-*"
+    respond:
+      content: "Hello from a mocked Claude."
+
+  - name: gpt4_specific
+    when:
+      model_matches: "gpt-4*"
+    respond:
+      content: "Hello from a mocked GPT-4."
+
+  # =========================================================================
+  # REACTING TO PREVIOUS MESSAGES
+  # `previous_message_role` and `previous_message_contains` look at the
+  # second-to-last message — the one before what we're "responding to."
+  # =========================================================================
+
+  - name: react_to_tool_output
+    when:
+      previous_message_role: tool
+      previous_message_contains: "error"
+    respond:
+      content: "It looks like the tool call failed. Let me try a different approach."
+
+  # =========================================================================
+  # TOOL-AWARE ROUTING
+  # `tools_include` matches when the request defines a tool with this name,
+  # regardless of whether the model has been asked to call it yet.
+  # =========================================================================
+
+  - name: weather_tool_available
+    when:
+      tools_include: get_weather
+    respond:
+      tool_calls:
+        - name: get_weather
+          arguments: {location: "San Francisco, CA"}
+
+  # =========================================================================
+  # FALLBACK
+  # No `when:` block means this rule matches everything. Keep it last.
+  # If you remove this rule, unmatched requests will fall through to the
+  # `defaults.fallback` setting at the top of this file.
+  # =========================================================================
+
+  - name: fallback
+    respond:
+      content: "This is a generic mock response from fakellm."

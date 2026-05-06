@@ -1,49 +1,71 @@
 # Changelog
 
-All notable changes to `fakellm` are documented in this file.
+All notable changes to fakellm are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] — 2026-05-02
+## [0.2.0] — 2026-05-06
 
-First maintenance release. Closes eight issues from an internal code review covering correctness bugs, a feature gap in streaming, and several refactors.
+The headline feature: rules can now match on conversation state, not just on
+individual request shape. This unlocks realistic agent testing — your mock
+can return a tool call on turn 1, a summary on turn 2, and a follow-up on
+turn 3, all driven from a single YAML file.
 
 ### Added
-- Streaming tool calls for both OpenAI and Anthropic formats. Rules with `respond.tool_calls` now work correctly when the request has `stream: true`. Previously these were silently dropped and the deterministic echo fallback streamed instead.
-- OpenAI streams emit `tool_calls` deltas with indexed function calls and chunked argument JSON, exercising SDK streaming-parse code paths.
-- Anthropic streams emit `tool_use` content blocks with `input_json_delta` events and a `stop_reason` of `tool_use`.
-- `fakellm serve` now validates that the config file exists at startup and fails loudly with a clear error message if it does not. Previously the server would start silently and every request would fall through to the deterministic echo, leaving users confused about why their rules weren't matching.
+
+- **Conversation tracking.** Requests are bucketed into conversations by a
+  stable hash of the first user message. Turn count and tool-result history
+  are tracked per conversation.
+- **New `when:` matchers:**
+  - `turn: N` — match the Nth turn of a conversation.
+  - `turn_in: [low, high]` — match a turn within an inclusive range.
+  - `previous_message_role: tool` — match the role of the message immediately
+    before the latest one.
+  - `previous_message_contains: "..."` — substring match on the previous
+    message's text.
+  - `tool_result_contains: "..."` — match if any tool result, in this request
+    or earlier in this conversation, contains the substring.
+- **`X-Fakellm-Conversation-Id` header.** Sent on every response so clients
+  can see which conversation they were bucketed into. Clients can also send
+  this header on requests to override the auto-derived ID — useful for tests.
+- **`POST /_fakellm/reset`** — clear all conversation state. Stats and
+  recent-request history are preserved. Use between tests.
+- **`GET /_fakellm/conversations`** — JSON snapshot of active conversations
+  with turn count and tool-result count for each.
+- **Dashboard updates.** `/_fakellm` now shows active conversations and
+  per-request turn numbers in the recent-requests table.
 
 ### Changed
-- **Breaking (internal):** `match_request()` now takes `headers` as an explicit parameter rather than reading from a magic `_headers` key on the request body. Callers should update from `match_request(body, config, api=...)` to `match_request(body, headers, config, api=...)`. This eliminates request body mutation and makes the matcher's dependencies explicit.
-- Renamed the configuration environment variable from `LLMOCK_CONFIG` to `FAKELLM_CONFIG` to match the project name. The old name is no longer recognized.
-- Extracted `deterministic_echo`, `approx_tokens`, and `count_tokens_from_messages` from `responder.py` into a new `_util.py` module. Both `responder.py` and `streaming.py` now import from this shared location instead of cross-importing private names.
-- The recent-requests log in `server.py` now uses `collections.deque(maxlen=50)` for O(1) appends instead of a list with manual trimming.
 
-### Fixed
-- `deterministic_echo` produced different fingerprints for semantically identical requests when nested dictionary keys had different insertion order. The hash now uses `json.dumps(body, sort_keys=True)` so the same logical request always produces the same fingerprint, regardless of how the JSON was constructed.
-- The dashboard at `/_fakellm` now HTML-escapes all user-controlled values (rule names, model strings, request metadata) before rendering. Previously a rule named `<script>alert(1)</script>` would be rendered as live HTML in the dashboard. Risk was low in practice since the dashboard binds to localhost by default, but the fix is a one-line addition of `html.escape()`.
-- The streaming code path no longer leaks the internal `_headers` key into the request body passed to downstream handlers. Resolved as a side effect of the `match_request` signature change.
+- `match_request()` now accepts an optional `state: ConversationState`
+  argument carrying multi-turn context. When omitted (e.g. from older callers),
+  it defaults to a turn-1 state with no history, so all existing matchers
+  behave exactly as before.
 
-### Known limitations
-- Module-level state (config, stats, recent requests) is per-process, so running with multiple uvicorn workers will partition that state across workers. Run with a single worker. This is now documented in the `server.py` module docstring; a future release may add shared state.
-- Token counts use a `len(text) // 4` approximation rather than a real tokenizer. Accuracy is low for short inputs and non-English text. Tracked for a future release.
+### Backward compatibility
 
-## [0.1.0] — 2026-04-30
+All existing matchers (`messages_contain`, `model_matches`, `tools_include`,
+`header.*`) continue to work unchanged. Existing config files run without
+modification — the new matchers are purely additive.
+
+## [0.1.1] — 2026-04-30
 
 Initial public release.
 
 ### Added
-- Mock server speaking OpenAI `/v1/chat/completions` and Anthropic `/v1/messages` API formats.
-- YAML-driven rule configuration with `messages_contain`, `model_matches`, `tools_include`, and `header.*` matchers.
-- Streaming responses for text content in both API formats.
-- Tool call responses (non-streaming).
-- Configurable error and status code responses for failure-injection testing.
-- Deterministic fallback responses based on request fingerprint when no rule matches.
-- Live dashboard at `/_fakellm` showing match counts and recent requests.
-- `fakellm init` command to create a starter `fakellm.yaml`.
-- `fakellm serve` command to start the server.
-- PyPI package published as `fakellm`.
 
-[0.1.1]: https://github.com/1dg618/fakellm/releases/tag/v0.1.1
-[0.1.0]: https://github.com/1dg618/fakellm/releases/tag/v0.1.0
+- OpenAI and Anthropic API-compatible endpoints (`/v1/chat/completions`,
+  `/v1/messages`).
+- YAML-based rules engine with `messages_contain`, `model_matches`,
+  `tools_include`, and `header.*` matchers.
+- Streaming support for both OpenAI (`data: ...` SSE) and Anthropic
+  (typed event sequence) formats.
+- Tool call mocking in both API shapes, with chunked argument streaming.
+- Per-rule status codes for error response testing.
+- HTML dashboard at `/_fakellm` showing request stats and history.
+- Hot config reload via `POST /_fakellm/reload`.
+- CLI: `fakellm init`, `fakellm serve`.
+
+[0.2.0]: https://github.com/yourname/fakellm/releases/tag/v0.2.0
+[0.1.1]: https://github.com/yourname/fakellm/releases/tag/v0.1.1
