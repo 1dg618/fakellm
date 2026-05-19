@@ -8,33 +8,39 @@ import uuid
 from typing import Any
 
 from ._util import approx_tokens, count_tokens_from_messages, deterministic_echo
+from .config import Rule, normalize_rule
 from .matcher import extract_messages
 
 
 def build_response(
-    rule: dict[str, Any] | None, body: dict[str, Any], api: str
+    rule: Rule | dict[str, Any] | None, body: dict[str, Any], api: str
 ) -> tuple[int, dict[str, Any]]:
-    """Return (status_code, response_body)."""
-    respond = (rule or {}).get("respond", {})
+    """Return (status_code, response_body).
 
-    # Error response shortcut
-    status = respond.get("status", 200)
+    `rule` may be a Rule, a dict in the YAML rule shape, or None. Dicts are
+    accepted for back-compat with tests and older callers that construct
+    rules by hand.
+    """
+    rule = normalize_rule(rule)
+    respond = rule.respond if rule is not None else None
+
+    status = respond.status if respond is not None else 200
     if status >= 400:
         return status, _error_body(respond, api)
 
-    content = respond.get("content")
+    content = respond.content if respond is not None else None
     if content is None:
         content = deterministic_echo(body)
 
-    tool_calls = respond.get("tool_calls")
+    tool_calls = respond.tool_calls if respond is not None else None
 
     if api == "openai":
         return 200, _openai_response(body, content, tool_calls)
     return 200, _anthropic_response(body, content, tool_calls)
 
 
-def _error_body(respond: dict[str, Any], api: str) -> dict[str, Any]:
-    message = respond.get("error", "Mock error")
+def _error_body(respond: Any, api: str) -> dict[str, Any]:
+    message = respond.error if respond is not None and respond.error else "Mock error"
     if api == "openai":
         return {"error": {"message": message, "type": "mock_error", "code": None}}
     return {"type": "error", "error": {"type": "mock_error", "message": message}}

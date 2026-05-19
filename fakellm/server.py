@@ -3,7 +3,7 @@
 Note: this server stores per-process state (config, stats, recent requests,
 conversations) at module level. Running with multiple uvicorn workers will
 partition that state across workers and is not currently supported. Run with
-a single worker.
+a single worker. The CLI defaults to and enforces this.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import _state
-from .config import Config, load_config
+from .config import Config, Rule, load_config
 from .matcher import match_request
 from .responder import build_response
 from .streaming import build_stream
@@ -37,11 +37,11 @@ _recent: Deque[dict[str, Any]] = deque(maxlen=_MAX_RECENT)
 def _record(
     api: str,
     body: dict[str, Any],
-    rule: dict[str, Any] | None,
+    rule: Rule | None,
     conversation_id: str,
     turn: int,
 ) -> None:
-    rule_name = rule.get("name", "<unnamed>") if rule else "<fallthrough>"
+    rule_name = rule.name if rule is not None else "<fallthrough>"
     _stats[rule_name] += 1
     _recent.appendleft(
         {
@@ -61,8 +61,6 @@ async def _handle(request: Request, api: str):
     headers = {k.lower(): v for k, v in request.headers.items()}
 
     conversation_id = _state.derive_conversation_id(body, headers)
-    # Record any tool results in the incoming history *before* advancing,
-    # so the current turn's matchers can see them.
     _state.record_tool_results(conversation_id, body)
     state = _state.advance(conversation_id)
 

@@ -1,12 +1,16 @@
-"""Match incoming requests against configured rules."""
+"""Match incoming requests against configured rules.
+
+Rules are walked top-to-bottom; first match wins. Per-rule precomputation
+(lowercased needles, compiled regexes) happens at config load time — see
+config._build_rule — so this hot path is straight comparisons.
+"""
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from ._state import ConversationState
-from .config import Config
+from .config import Config, Rule
 
 
 def match_request(
@@ -15,95 +19,105 @@ def match_request(
     config: Config,
     api: str,
     state: ConversationState | None = None,
-) -> dict[str, Any] | None:
-    """Walk rules top-to-bottom. Return the first matching rule, or None.
+) -> Rule | None:
+    """Walk rules top-to-bottom. Return the first matching Rule, or None.
 
-    `state` carries multi-turn context. If None (e.g. callers from older code
-    paths or tests), conversation-aware matchers (turn, previous_*, etc.)
-    behave as if this were turn 1 with no prior context.
+    `state` carries multi-turn context. If None (e.g. older callers, tests),
+    conversation-aware matchers behave as if this were turn 1 with no prior
+    context.
     """
     if state is None:
         state = ConversationState(turn=1)
 
     messages = extract_messages(body, api)
 
+    # Flatten + lowercase once per request, not once per rule. Many rules
+    # share the same messages_contain / previous_message_contains check
+    # against the same flattened text — recomputing it inside the loop was
+    # the single biggest source of redundant work on the hot path.
+    flat_text_lower = _flatten_messages(messages).lower()
+    prev_message = messages[-2] if len(messages) >= 2 else None
+    prev_text_lower = _message_text(prev_message).lower() if prev_message else ""
+    model_str = str(body.get("model", ""))
+    tool_names = _extract_tool_names(body)
+    request_tool_result_texts_lower = [
+        t.lower() for t in _tool_result_texts_from_messages(messages)
+    ]
+
     for rule in config.rules:
-        if _rule_matches(rule, body, messages, headers, state):
+        if _rule_matches(
+            rule,
+            flat_text_lower=flat_text_lower,
+            prev_message=prev_message,
+            prev_text_lower=prev_text_lower,
+            model_str=model_str,
+            tool_names=tool_names,
+            request_tool_result_texts_lower=request_tool_result_texts_lower,
+            headers=headers,
+            state=state,
+        ):
             return rule
 
     return None
 
 
 def _rule_matches(
-    rule: dict[str, Any],
-    body: dict[str, Any],
-    messages: list[dict[str, Any]],
+    rule: Rule,
+    *,
+    flat_text_lower: str,
+    prev_message: dict[str, Any] | None,
+    prev_text_lower: str,
+    model_str: str,
+    tool_names: list[str],
+    request_tool_result_texts_lower: list[str],
     headers: dict[str, str],
     state: ConversationState,
 ) -> bool:
-    when = rule.get("when", {})
-    if not when:
-        return True  # rule with no conditions matches everything
+    when = rule.when
 
-    if "messages_contain" in when:
-        text = _flatten_messages(messages)
-        if when["messages_contain"].lower() not in text.lower():
+    # Order checks cheapest-first: O(1) scalar / dict compares before any
+    # substring or regex scans. The previous version did messages_contain
+    # first, which is the most expensive check.
+
+    if when.turn is not None and state.turn != when.turn:
+        return False
+
+    if when.turn_in is not None:
+        low, high = when.turn_in
+        if not (low <= state.turn <= high):
             return False
 
-    if "model_matches" in when:
-        pattern = when["model_matches"].replace("*", ".*")
-        if not re.match(f"^{pattern}$", body.get("model", "")):
+    for hk, hv in when.headers.items():
+        if headers.get(hk) != hv:
             return False
 
-    if "tools_include" in when:
-        tool_names = _extract_tool_names(body)
-        if when["tools_include"] not in tool_names:
+    if when.previous_message_role is not None:
+        if prev_message is None or prev_message.get("role") != when.previous_message_role:
             return False
 
-    # ---- Conversation-aware matchers ----
+    if when.tools_include is not None and when.tools_include not in tool_names:
+        return False
 
-    if "turn" in when:
-        if state.turn != int(when["turn"]):
+    # model_matches: compiled at load time, anchored regex preserving glob
+    # semantics. re.match is anchored at start; the regex has $ at end.
+    if rule._model_regex is not None:
+        if not rule._model_regex.match(model_str):
             return False
 
-    if "turn_in" in when:
-        # Inclusive range: [low, high]
-        low, high = when["turn_in"]
-        if not (int(low) <= state.turn <= int(high)):
+    if rule._previous_message_contains_lower is not None:
+        if rule._previous_message_contains_lower not in prev_text_lower:
             return False
 
-    if "previous_message_role" in when:
-        prev = _previous_message(messages)
-        if prev is None or prev.get("role") != when["previous_message_role"]:
+    if rule._messages_contain_lower is not None:
+        if rule._messages_contain_lower not in flat_text_lower:
             return False
 
-    if "previous_message_contains" in when:
-        prev = _previous_message(messages)
-        if prev is None:
-            return False
-        prev_text = _message_text(prev)
-        if when["previous_message_contains"].lower() not in prev_text.lower():
-            return False
-
-    if "tool_result_contains" in when:
-        needle = when["tool_result_contains"].lower()
-        # Check both: tool results in this request's messages, AND any we've
-        # seen previously in this conversation. Either source can satisfy
-        # the matcher — useful for rules that fire several turns after a
-        # tool was called.
-        in_request = any(
-            needle in t.lower() for t in _tool_result_texts_from_messages(messages)
-        )
+    if rule._tool_result_contains_lower is not None:
+        needle = rule._tool_result_contains_lower
+        in_request = any(needle in t for t in request_tool_result_texts_lower)
         in_history = any(needle in t.lower() for t in state.seen_tool_results)
         if not (in_request or in_history):
             return False
-
-    # Header matchers: any key starting with "header." matches that header
-    for key, value in when.items():
-        if key.startswith("header."):
-            header_name = key[len("header.") :].lower()
-            if headers.get(header_name) != value:
-                return False
 
     return True
 
@@ -113,28 +127,26 @@ def extract_messages(body: dict[str, Any], api: str) -> list[dict[str, Any]]:
     if api == "openai":
         return body.get("messages", [])
 
-    # Anthropic: system is a separate field, prepend it as a message
+    # Anthropic: system is a separate field, prepend it as a message.
     msgs = list(body.get("messages", []))
     system = body.get("system")
     if system:
         if isinstance(system, list):
-            # Anthropic system blocks: [{"type": "text", "text": "..."}]
             sys_text = " ".join(b.get("text", "") for b in system if isinstance(b, dict))
         else:
-            sys_text = system
+            sys_text = str(system)
         msgs.insert(0, {"role": "system", "content": sys_text})
     return msgs
 
 
 def _flatten_messages(messages: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for m in messages:
-        parts.append(_message_text(m))
-    return " ".join(parts)
+    return " ".join(_message_text(m) for m in messages)
 
 
-def _message_text(message: dict[str, Any]) -> str:
+def _message_text(message: dict[str, Any] | None) -> str:
     """Extract text from a single message, handling string and block content."""
+    if message is None:
+        return ""
     content = message.get("content", "")
     if isinstance(content, str):
         return content
@@ -157,18 +169,6 @@ def _message_text(message: dict[str, Any]) -> str:
     return ""
 
 
-def _previous_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the message immediately before the current request would respond to.
-
-    For an incoming request, the "current" message is the last one in the
-    list (typically the latest user/tool message). The "previous" one is
-    the second-to-last.
-    """
-    if len(messages) < 2:
-        return None
-    return messages[-2]
-
-
 def _tool_result_texts_from_messages(messages: list[dict[str, Any]]) -> list[str]:
     """Extract tool-result text from messages in either OpenAI or Anthropic shape."""
     out: list[str] = []
@@ -176,12 +176,10 @@ def _tool_result_texts_from_messages(messages: list[dict[str, Any]]) -> list[str
         role = m.get("role")
         content = m.get("content")
 
-        # OpenAI: role="tool", content is a string
         if role == "tool" and isinstance(content, str):
             out.append(content)
             continue
 
-        # Anthropic: role="user", content list contains tool_result blocks
         if isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
@@ -203,12 +201,10 @@ def _extract_tool_names(body: dict[str, Any]) -> list[str]:
     for t in body.get("tools", []):
         if not isinstance(t, dict):
             continue
-        # OpenAI shape: {"type": "function", "function": {"name": "..."}}
         if "function" in t and isinstance(t["function"], dict):
             name = t["function"].get("name")
             if name:
                 names.append(name)
-        # Anthropic shape: {"name": "...", "input_schema": {...}}
         elif "name" in t:
             names.append(t["name"])
     return names

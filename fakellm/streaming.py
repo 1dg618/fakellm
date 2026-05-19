@@ -9,14 +9,22 @@ import uuid
 from typing import Any, AsyncIterator
 
 from ._util import deterministic_echo
+from .config import Rule, normalize_rule
 
 
 async def build_stream(
-    rule: dict[str, Any] | None, body: dict[str, Any], api: str
+    rule: Rule | dict[str, Any] | None, body: dict[str, Any], api: str
 ) -> AsyncIterator[str]:
-    respond = (rule or {}).get("respond", {})
-    content = respond.get("content")
-    tool_calls = respond.get("tool_calls")
+    """Yield SSE chunks for the given rule.
+
+    `rule` may be a Rule, a dict in the YAML rule shape, or None. Dicts are
+    accepted for back-compat with tests and older callers that construct
+    rules by hand.
+    """
+    rule = normalize_rule(rule)
+    respond = rule.respond if rule is not None else None
+    content = respond.content if respond is not None else None
+    tool_calls = respond.tool_calls if respond is not None else None
 
     # If neither content nor tool_calls is configured, fall back to echo text.
     if content is None and not tool_calls:
@@ -74,7 +82,6 @@ async def _openai_stream(
             )
 
             args_json = json.dumps(tc.get("arguments", {}))
-            # Split arguments into a few chunks to exercise streaming-parse code paths.
             for piece in _split_for_streaming(args_json):
                 yield chunk(
                     {
@@ -87,7 +94,6 @@ async def _openai_stream(
 
         yield chunk({}, finish_reason="tool_calls")
     else:
-        # Content chunks: word-by-word.
         words = (content or "").split(" ")
         for i, word in enumerate(words):
             piece = word if i == 0 else " " + word
@@ -220,5 +226,5 @@ def _split_for_streaming(s: str, max_pieces: int = 4) -> list[str]:
         return [s]
     size = len(s) // n
     pieces = [s[i * size : (i + 1) * size] for i in range(n - 1)]
-    pieces.append(s[(n - 1) * size :])  # remainder
+    pieces.append(s[(n - 1) * size :])
     return pieces

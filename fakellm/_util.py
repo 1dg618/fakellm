@@ -6,6 +6,25 @@ import hashlib
 import json
 from typing import Any
 
+# Optional dependency. If tiktoken is installed we use it for accurate
+# OpenAI counts and as a reasonable approximation for Anthropic models
+# (Anthropic's tokenizer isn't fully public; cl100k_base is close enough
+# for testing purposes). If not installed, we fall back to the original
+# len // 4 heuristic — no error, no warning, fakellm just works without it.
+try:
+    import tiktoken as _tiktoken
+
+    _ENCODING = _tiktoken.get_encoding("cl100k_base")
+except Exception:  # pragma: no cover — exercised by the fallback path
+    # We catch broadly here on purpose. Possible failure modes include:
+    #   - tiktoken not installed (ImportError)
+    #   - tiktoken installed but BPE files can't be downloaded (sandboxed CI,
+    #     no internet, expired cache) — raises requests.HTTPError
+    #   - tiktoken's loader changing shape in a future version
+    # None of these should crash a mock server at import time. Fall back
+    # silently to the heuristic in approx_tokens().
+    _ENCODING = None
+
 
 def deterministic_echo(body: dict[str, Any]) -> str:
     """A stable, fake-but-plausible response based on a hash of the request.
@@ -21,11 +40,21 @@ def deterministic_echo(body: dict[str, Any]) -> str:
 
 
 def approx_tokens(text: str) -> int:
-    """Rough token count.
+    """Token count for `text`.
 
-    TODO: replace with tiktoken / Anthropic tokenizer for accurate counts.
-    See https://github.com/1dg618/fakellm/issues for the tracking issue.
+    Uses tiktoken's cl100k_base if available (exact for modern OpenAI models,
+    approximate for Anthropic). Falls back to len // 4 if tiktoken isn't
+    installed. Always returns at least 1 for non-empty strings.
     """
+    if not text:
+        return 0
+    if _ENCODING is not None:
+        try:
+            return max(1, len(_ENCODING.encode(text)))
+        except Exception:
+            # tiktoken can raise on some unusual inputs; fall back rather
+            # than break the whole request over a token count.
+            pass
     return max(1, len(text) // 4)
 
 
