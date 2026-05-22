@@ -41,6 +41,13 @@ fakellm fits between those:
 | No code changes vs. production | ✅ | ❌ | ✅ | ✅ |
 | Shareable across services / languages | n/a | ❌ | ❌ | ✅ |
 
+**What fakellm does and doesn't test.** fakellm verifies that *your code* handles
+LLM responses correctly — parsing, tool-call dispatch, streaming, error handling,
+and multi-turn agent loops. It does **not** tell you whether a real model returns
+the right answer to your prompt, since the responses are the ones you define. Use
+fakellm for fast, deterministic coverage of your plumbing, and pair it with a
+small suite of real-API evals to catch prompt and model-behavior regressions.
+
 ---
 
 ## Multi-turn agents in 20 lines (new in 0.2)
@@ -95,9 +102,10 @@ end-to-end against fakellm and you assert on the output.
 
 ## Features
 
-- **Speaks both APIs.** Drop-in replacement for `https://api.openai.com/v1` and
-  `https://api.anthropic.com/v1` — same request shapes, same response shapes,
-  same SSE streaming formats.
+- **Speaks both APIs.** Drop-in replacement for the OpenAI and Anthropic HTTP
+  APIs — same request shapes, same response shapes, same SSE streaming formats.
+  Point the OpenAI SDK at `http://127.0.0.1:9999/v1` and the Anthropic SDK at
+  `http://127.0.0.1:9999` (its messages endpoint is served at `/v1/messages`).
 - **Rules engine.** Match requests on prompt content, model name, tools, headers,
   conversation turn, previous message role/content, or tool-result content.
   First match wins.
@@ -121,6 +129,13 @@ pip install fakellm
 ```
 
 Requires Python 3.10+.
+
+For exact, tiktoken-based token counts (instead of the default approximation),
+install the `accurate` extra:
+
+```bash
+pip install fakellm[accurate]
+```
 
 ---
 
@@ -239,9 +254,16 @@ Stats and request history are preserved.
 fakellm init                  # create fakellm.yaml
 fakellm serve                 # start the server
 fakellm serve --port 8080     # custom port
+fakellm serve --host 0.0.0.0  # custom host
 fakellm serve --config x.yaml # custom config path
 fakellm serve --reload        # auto-reload on code changes (dev only)
+fakellm serve --workers N     # uvicorn workers (see caveat below; default 1)
 ```
+
+`--workers` defaults to 1 and should stay there for normal use — fakellm stores
+state in process memory, so more than one worker partitions conversations and
+stats across workers. The flag exists for advanced cases only and prints a
+warning when set above 1.
 
 ---
 
@@ -252,7 +274,6 @@ fakellm serve --reload        # auto-reload on code changes (dev only)
   across workers. Stick with the default single worker.
 - Token counts are approximate (`len(text) // 4`) by default. Install the
   `accurate` extra for tiktoken-based counts: `pip install fakellm[accurate]`.
-  *(Coming in 0.3.)*
 - Not for production traffic. fakellm is built for tests; it's not a
   production-ready proxy.
 

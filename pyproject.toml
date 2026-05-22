@@ -1,6 +1,6 @@
 [project]
 name = "fakellm"
-version = "0.3.1"
+version = "0.3.5"
 description = "A mock LLM server for testing. Drop-in replacement for OpenAI and Anthropic APIs."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,15 +27,24 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dgregor/fakellm"
-Repository = "https://github.com/dgregor/fakellm"
-Documentation = "https://github.com/dgregor/fakellm#readme"
-Issues = "https://github.com/dgregor/fakellm/issues"
+Homepage = "https://github.com/1dg618/fakellm"
+Repository = "https://github.com/1dg618/fakellm"
+Documentation = "https://github.com/1dg618/fakellm#readme"
+Issues = "https://github.com/1dg618/fakellm/issues"
 
 [project.optional-dependencies]
+accurate = ["tiktoken>=0.7"]
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
     "openai>=1.40",
     "anthropic>=0.34",
+    "tiktoken>=0.7",   # so the accurate-path code is exercised in tests
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+fakellm = "fakellm.cli:main"

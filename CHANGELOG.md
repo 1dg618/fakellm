@@ -5,6 +5,39 @@ All notable changes to fakellm are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] — 2026-05-22
+
+### Added
+
+- **`accurate` optional-dependency extra** for tiktoken-based token counts:
+  `pip install fakellm[accurate]`. When tiktoken is installed, token counts use
+  its `cl100k_base` encoding (exact for modern OpenAI models, approximate for
+  Anthropic); without it, fakellm falls back to the `len(text) // 4`
+  approximation. The fallback is silent — fakellm works either way.
+
+### Fixed
+
+- **Packaging.** The `accurate` extra is now declared in `pyproject.toml`, so
+  the documented `pip install fakellm[accurate]` command actually installs
+  tiktoken instead of warning that the extra does not exist. tiktoken is also
+  included in the `dev` extra so the accurate-count path is exercised in tests.
+- **`cli.py`.** Removed a redundant `except (ValueError, Exception)` clause
+  (`Exception` already covers `ValueError`).
+- **Version metadata.** `__version__` in `fakellm/__init__.py` now matches the
+  version in `pyproject.toml`.
+
+### Changed
+
+- **README.** Documented the `serve --workers` flag and its single-worker
+  caveat, clarified the Anthropic base-URL setup (the SDK points at the server
+  root; the messages endpoint is served at `/v1/messages`), and added a note on
+  what fakellm does and does not test (it verifies your code's handling of
+  responses, not the quality of a real model's output — pair it with real-API
+  evals). Removed an outdated "Coming in 0.3" note now that tiktoken support
+  has shipped.
+- Removed a duplicate copy of `README.md` from inside the package directory;
+  the canonical README lives at the repository root.
+
 ## [0.2.0] — 2026-05-06
 
 The headline feature: rules can now match on conversation state, not just on
@@ -67,5 +100,6 @@ Initial public release.
 - Hot config reload via `POST /_fakellm/reload`.
 - CLI: `fakellm init`, `fakellm serve`.
 
-[0.2.0]: https://github.com/yourname/fakellm/releases/tag/v0.2.0
-[0.1.1]: https://github.com/yourname/fakellm/releases/tag/v0.1.1
+[0.3.5]: https://github.com/1dg618/fakellm/releases/tag/v0.3.5
+[0.2.0]: https://github.com/1dg618/fakellm/releases/tag/v0.2.0
+[0.1.1]: https://github.com/1dg618/fakellm/releases/tag/v0.1.1

@@ -93,7 +93,7 @@ def serve(host: str, port: int, config: str, reload: bool, workers: int) -> None
 
     try:
         loaded = load_config(config_path)
-    except (ValueError, Exception) as e:
+    except Exception as e:
         click.echo(f"Error loading config '{config}': {e}", err=True)
         raise click.exceptions.Exit(1)
 
