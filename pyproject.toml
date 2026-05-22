@@ -1,6 +1,6 @@
 [project]
 name = "fakellm"
-version = "0.3.5"
+dynamic = ["version"]
 description = "A mock LLM server for testing. Drop-in replacement for OpenAI and Anthropic APIs."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,3 +48,6 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 fakellm = "fakellm.cli:main"
+
+[tool.hatch.version]
+path = "fakellm/__init__.py"
